@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="900">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Azure Dashboard</title>
+<!--CHARTJS-->
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1b1f24;--mut:#6b7280;--bd:#e5e7eb;--ok:#16a34a;--off:#dc2626;--dea:#d97706;--ac:#2563eb}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--tx:#e8eaed;--mut:#9aa0a6;--bd:#2a2e36}}
+*{box-sizing:border-box}body{margin:0;font:14px system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--tx)}
+header{display:flex;justify-content:space-between;align-items:center;padding:18px 28px;flex-wrap:wrap;gap:8px}
+h1{font-size:20px;margin:0}small,.mut{color:var(--mut)}
+main{padding:0 28px 40px;max-width:1300px;margin:auto}
+.grid{display:grid;gap:14px}.kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px}
+.kpi b{display:block;font-size:26px;margin-top:4px}
+.two{grid-template-columns:1fr 2fr;margin-bottom:14px}@media(max-width:800px){.two{grid-template-columns:1fr}}
+h2{font-size:15px;margin:0 0 12px}
+.tabs{display:flex;gap:8px;margin:18px 0 10px;flex-wrap:wrap}
+.tabs button,select,input{background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 12px;font:inherit}
+.tabs button{cursor:pointer}
+.tabs button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+input{min-width:220px}
+.wrap{overflow-x:auto}table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--bd);white-space:nowrap}
+th{color:var(--mut);font-weight:500;cursor:pointer;user-select:none}
+td.n,th.n{text-align:right}
+.b{padding:2px 9px;border-radius:99px;font-size:12px;color:#fff;background:var(--mut)}
+.Ligada{background:var(--ok)}.Desligada{background:var(--off)}.Desalocada{background:var(--dea)}
+.Disco,.NIC{background:#6366f1}.IPPúblico{background:#0891b2}.VM{background:var(--ac)}
+tr.clk{cursor:pointer}tr.clk:hover td{background:rgba(127,127,127,.08)}
+tr.det>td{background:rgba(127,127,127,.06);padding:6px 10px 10px 34px}
+.sub{width:auto;min-width:420px}.sub td{border-bottom:1px dashed var(--bd);padding:5px 10px}
+.warn{background:#fef3c7;color:#92400e;border-radius:8px;padding:8px 12px;margin:0 0 14px}
+.empty{text-align:center;color:var(--mut);padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Azure Dashboard</h1><small id="sub"></small></div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <label class="mut" for="mes">Mês:</label><select id="mes"></select>
+    <small id="gen"></small>
+  </div>
+</header>
+<main>
+  <div id="aviso"></div>
+  <div class="grid kpis" id="kpis"></div>
+  <div class="grid two">
+    <div class="card"><h2>VMs por status</h2><canvas id="cStatus" height="220"></canvas></div>
+    <div class="card"><h2>Custo diário</h2><canvas id="cDia" height="120"></canvas></div>
+  </div>
+  <div class="tabs">
+    <button class="on" data-t="vms">Máquinas virtuais</button>
+    <button data-t="tag">VMs por tag</button>
+    <button data-t="rec">Custo por recurso (VM)</button>
+    <button data-t="orf">Recursos órfãos</button>
+    <button data-t="out">Outros custos (sem VM)</button>
+    <span style="flex:1"></span>
+    <select id="fs"></select>
+    <input id="q" placeholder="Buscar por nome, RG, região, tag...">
+  </div>
+  <div class="card wrap"><table id="tb"></table></div>
+  <p class="mut" style="text-align:center;font-size:12px">*Custo total = VM + discos + NICs + IPs públicos associados (clique na linha da VM para ver o detalhe). Previsão = acumulado + média diária dos últimos 7 dias × dias restantes; por VM é uma estimativa proporcional. Ao escolher um mês anterior, apenas os custos mudam: status, tags e recursos órfãos refletem o estado atual do Azure, e recursos já excluídos aparecem em "Outros custos".</p>
+</main>
+<script>
+const D = __DATA__;
+const $ = s => document.querySelector(s);
+const money = v => Number(v).toLocaleString('pt-BR', {style:'currency', currency: D.moeda || 'BRL'});
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmtD = d => { d = String(d).replace(/-/g,'').slice(0,8); return `${d.slice(6,8)}/${d.slice(4,6)}`; };
+
+// ---------- visão do mês selecionado ----------
+const chaves = Object.keys(D.meses).sort().reverse();
+const SEM = {custo_vm:0, custo_total:0, prev_total:0, recursos:[]};
+let V;
+function visao(key) {
+  const M = D.meses[key];
+  return {key, periodo:M.periodo, total:M.total, diario:M.diario, previsao:M.previsao, anterior:M.anterior, outros:M.outros,
+    vms: D.vms.map(v => ({...v, ...(M.vms[v.rid] || SEM)})),
+    orfaos: D.orfaos.map(o => ({...o, custo: M.orfaos[o.rid] || 0}))};
+}
+
+// ---------- KPIs e gráficos ----------
+const charts = {};
+function renderTopo() {
+  const cnt = s => V.vms.filter(v => v.status === s).length;
+  const orfDe = t => V.orfaos.filter(o => o.tipo === t).length;
+  const orfCusto = V.orfaos.reduce((a,o) => a + o.custo, 0);
+  const outCusto = V.outros.reduce((a,o) => a + o.custo, 0);
+  const ant = (V.anterior && V.anterior.total != null) ? V.anterior.total : null;
+  const temProj = V.previsao.proj.length > 0;
+  const variacao = (ant === null || ant === 0) ? '—' :
+    (v => `${v > 0 ? '▲ +' : v < 0 ? '▼ ' : ''}${v.toLocaleString('pt-BR',{maximumFractionDigits:1})}%`)((V.previsao.valor / ant - 1) * 100);
+
+  $('#sub').textContent = `Período ${V.periodo}`;
+  $('#gen').textContent = `Atualizado em ${D.gerado}`;
+  const avisos = [];
+  if (!D.vms.length) avisos.push('Nenhuma VM retornada. Verifique SUBSCRIPTION_ID e a role Reader do service principal.');
+  if (!V.diario.length) avisos.push('Nenhum custo retornado neste mês. Verifique a role Cost Management Reader ou escolha outro mês.');
+  if (!window.Chart) avisos.push('Chart.js não carregou: gráficos indisponíveis, tabelas funcionam normalmente.');
+  $('#aviso').innerHTML = avisos.map(a => `<div class="warn">⚠ ${a}</div>`).join('');
+
+  $('#kpis').innerHTML = [
+    ['Custo total do mês', money(V.total)],
+    ...(temProj ? [['Previsão do mês', money(V.previsao.valor)]] : []),
+    ['Média diária', money(V.previsao.media_diaria)],
+    [`Mês anterior (${V.anterior.periodo})`, ant === null ? '—' : money(ant)],
+    [temProj ? 'Previsão vs mês anterior' : 'Variação vs mês anterior', variacao],
+    ['VMs', V.vms.length],
+    ['Ligadas', cnt('Ligada')], ['Desligadas', cnt('Desligada')], ['Desalocadas', cnt('Desalocada')],
+    ['Recursos órfãos', V.orfaos.length],
+    ['IPs órfãos', orfDe('IP Público')], ['Discos órfãos', orfDe('Disco')], ['NICs órfãs', orfDe('NIC')],
+    ['Custo dos órfãos', money(orfCusto)],
+    ['Outros custos (sem VM)', money(outCusto)]
+  ].map(([k,v]) => `<div class="card kpi"><span class="mut">${k}</span><b>${v}</b></div>`).join('');
+
+  if (!window.Chart) return;
+  Object.values(charts).forEach(c => c.destroy());
+  charts.s = new Chart($('#cStatus'), {type:'doughnut',
+    data:{labels:['Ligada','Desligada','Desalocada'], datasets:[{data:[cnt('Ligada'),cnt('Desligada'),cnt('Desalocada')],
+    backgroundColor:[css('--ok'),css('--off'),css('--dea')], borderWidth:0}]},
+    options:{cutout:'65%', plugins:{legend:{position:'bottom'}}}});
+  const proj = V.previsao.proj;
+  charts.d = new Chart($('#cDia'), {type:'bar',
+    data:{labels:[...V.diario.map(x => fmtD(x.d)), ...proj.map(x => fmtD(x.d))],
+      datasets:[
+        {label:'Realizado', data:[...V.diario.map(x => x.c), ...proj.map(() => null)], backgroundColor:css('--ac'), borderRadius:4},
+        {label:'Previsto', data:[...V.diario.map(() => null), ...proj.map(x => x.c)], backgroundColor:css('--ac') + '55', borderRadius:4}]},
+    options:{plugins:{legend:{display:proj.length > 0}},
+      scales:{x:{stacked:true}, y:{stacked:true, ticks:{callback:v => money(v)}}}}});
+}
+
+// ---------- tabelas ----------
+let tab = 'vms', sortK = null, asc = true;
+const cols = {
+  vms: [['nome','Nome'],['status','Status'],['rg','Resource Group'],['regiao','Região'],['tamanho','Tamanho'],['so','SO'],['custo_vm','Custo VM','n'],['custo_total','Custo total*','n'],['prev_total','Previsão mês*','n']],
+  rec: [['vm','VM'],['tipo','Tipo'],['nome','Recurso'],['rg','Resource Group'],['custo','Custo','n']],
+  orf: [['tipo','Tipo'],['nome','Nome'],['detalhe','Detalhe'],['rg','Resource Group'],['regiao','Região'],['custo','Custo','n']],
+  out: [['tipo','Tipo de recurso'],['nome','Nome'],['rg','Resource Group'],['custo','Custo','n']]
+};
+const flat = () => V.vms.flatMap(v => v.recursos.map(r => ({vm:v.nome, rg:v.rg, tipo:r.tipo, nome:r.nome, custo:r.custo})));
+const dados = () => ({vms:V.vms, rec:flat(), orf:V.orfaos, out:V.outros})[tab];
+const aberto = new Set(), abertoTag = new Set();
+const txt = r => Object.entries(r).filter(([k]) => k !== 'rid').map(([,x]) => typeof x === 'object' ? JSON.stringify(x) : x).join(' ').toLowerCase();
+const tagVal = (v, k) => { const e = Object.entries(v.tags || {}).find(([x]) => x.toLowerCase() === k.toLowerCase()); return e ? String(e[1]).trim() : null; };
+const tagKeys = (() => { const c = {}; D.vms.forEach(v => Object.keys(v.tags || {}).forEach(k => { const l = k.toLowerCase(); c[l] = c[l] || {n:0, nome:k}; c[l].n++; }));
+  return Object.values(c).sort((a,b) => b.n - a.n).map(x => x.nome); })();
+const ligar = () => document.querySelectorAll('th').forEach(th => th.onclick = () => { asc = sortK === th.dataset.k ? !asc : true; sortK = th.dataset.k; render(); });
+const badge = v => `<span class="b ${esc(String(v).replace(/\s/g,''))}">${esc(v)}</span>`;
+
+function renderTag() {
+  const q = $('#q').value.toLowerCase(), key = $('#fs').value;
+  if (!key) { $('#tb').innerHTML = '<tbody><tr><td class="empty">Nenhuma VM possui tags no Azure.</td></tr></tbody>'; return; }
+  const totalVm = V.vms.reduce((a, v) => a + v.custo_total, 0) || 1;
+  const g = {};
+  V.vms.filter(v => txt(v).includes(q)).forEach(v => {
+    const val = tagVal(v, key) || '(sem tag)';
+    const x = g[val] = g[val] || {valor:val, vms:[], qtd:0, lig:0, des:0, dea:0, custo:0, prev:0};
+    x.vms.push(v); x.qtd++; x.custo += v.custo_total; x.prev += v.prev_total;
+    if (v.status === 'Ligada') x.lig++; else if (v.status === 'Desligada') x.des++; else if (v.status === 'Desalocada') x.dea++;
+  });
+  const rows = Object.values(g).map(x => ({...x, pct: x.custo / totalVm * 100}));
+  rows.sort((a, b) => sortK ? (a[sortK] > b[sortK] ? 1 : -1) * (asc ? 1 : -1) : b.custo - a.custo);
+  const c = [['valor', `Tag: ${key}`],['qtd','VMs','n'],['lig','Ligadas','n'],['des','Desligadas','n'],['dea','Desalocadas','n'],['custo','Custo total*','n'],['prev','Previsão mês*','n'],['pct','% do total','n']];
+  const sub = x => `<tr class="det"><td colspan="${c.length}"><table class="sub">` +
+    [...x.vms].sort((a, b) => b.custo_total - a.custo_total).map(v =>
+      `<tr><td>${esc(v.nome)}</td><td>${badge(v.status)}</td><td>${esc(v.rg)}</td><td>${esc(v.tamanho)}</td><td class="n">${money(v.custo_total)}</td><td class="n">${money(v.prev_total)}</td></tr>`).join('') +
+    '</table></td></tr>';
+  $('#tb').innerHTML = '<thead><tr>' + c.map(([k,l,n]) => `<th class="${n||''}" data-k="${k}">${l}</th>`).join('') + '</tr></thead><tbody>' +
+    (rows.length ? rows.map(x => `<tr class="clkt" data-n="${esc(x.valor)}"><td>${abertoTag.has(x.valor) ? '▾' : '▸'} ${esc(x.valor)}</td><td class="n">${x.qtd}</td><td class="n">${x.lig}</td><td class="n">${x.des}</td><td class="n">${x.dea}</td><td class="n">${money(x.custo)}</td><td class="n">${money(x.prev)}</td><td class="n">${x.pct.toLocaleString('pt-BR',{maximumFractionDigits:1})}%</td></tr>` +
+      (abertoTag.has(x.valor) ? sub(x) : '')).join('') : `<tr><td class="empty" colspan="${c.length}">Nenhum registro</td></tr>`) + '</tbody>';
+  document.querySelectorAll('tr.clkt').forEach(tr => tr.onclick = () => { const n = tr.dataset.n; abertoTag.has(n) ? abertoTag.delete(n) : abertoTag.add(n); render(); });
+  ligar();
+}
+
+function render() {
+  if (tab === 'tag') return renderTag();
+  const q = $('#q').value.toLowerCase(), fs = $('#fs').value;
+  let rows = dados().filter(r => (!fs || r.status === fs || r.tipo === fs) && txt(r).includes(q));
+  if (sortK) rows = [...rows].sort((a,b) => (a[sortK] > b[sortK] ? 1 : -1) * (asc ? 1 : -1));
+  const c = cols[tab];
+  const cell = (r, [k,,n]) => {
+    const v = r[k];
+    if (k === 'status' || (tab !== 'vms' && tab !== 'out' && k === 'tipo')) return `<td>${badge(v)}</td>`;
+    if (tab === 'vms' && k === 'nome') return `<td>${aberto.has(r.rid) ? '▾' : '▸'} ${esc(v)}</td>`;
+    return `<td class="${n||''}">${n ? money(v) : esc(v)}</td>`;
+  };
+  const detalhe = r => `<tr class="det"><td colspan="${c.length}"><table class="sub">` +
+    r.recursos.map(x => `<tr><td>${badge(x.tipo)}</td><td>${esc(x.nome)}</td><td class="n">${money(x.custo)}</td></tr>`).join('') +
+    `<tr><td></td><td><b>Total</b></td><td class="n"><b>${money(r.custo_total)}</b></td></tr></table></td></tr>`;
+  $('#tb').innerHTML = '<thead><tr>' + c.map(([k,l,n]) => `<th class="${n||''}" data-k="${k}">${l}</th>`).join('') + '</tr></thead><tbody>' +
+    (rows.length ? rows.map(r => `<tr${tab === 'vms' ? ` class="clk" data-n="${esc(r.rid)}"` : ''}>` + c.map(col => cell(r, col)).join('') + '</tr>' +
+      (tab === 'vms' && aberto.has(r.rid) ? detalhe(r) : '')).join('') : `<tr><td class="empty" colspan="${c.length}">Nenhum registro</td></tr>`) + '</tbody>';
+  document.querySelectorAll('tr.clk').forEach(tr => tr.onclick = () => {
+    const n = tr.dataset.n; aberto.has(n) ? aberto.delete(n) : aberto.add(n); render();
+  });
+  ligar();
+}
+function setFilter() {
+  if (tab === 'tag') { $('#fs').innerHTML = tagKeys.map(k => `<option>${esc(k)}</option>`).join(''); return; }
+  const opts = tab === 'vms' ? ['Ligada','Desligada','Desalocada']
+             : tab === 'rec' ? ['VM','Disco','NIC','IP Público']
+             : tab === 'orf' ? ['Disco','NIC','IP Público']
+             : [...new Set(V.outros.map(o => o.tipo))].sort();
+  $('#fs').innerHTML = '<option value="">Todos</option>' + opts.map(o => `<option>${esc(o)}</option>`).join('');
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); tab = b.dataset.t; sortK = null; $('#q').value = ''; setFilter(); render();
+});
+$('#q').oninput = render; $('#fs').onchange = render;
+
+// ---------- seletor de mês ----------
+$('#mes').innerHTML = chaves.map(k => `<option value="${k}">${esc(D.meses[k].periodo)}${k === D.mes_atual ? ' (atual)' : ''}</option>`).join('');
+const ini = chaves.includes(location.hash.slice(1)) ? location.hash.slice(1) : D.mes_atual;
+$('#mes').value = ini;
+function trocarMes(key) { V = visao(key); history.replaceState(null, '', '#' + key); renderTopo(); setFilter(); render(); }
+$('#mes').onchange = e => { const fs = $('#fs').value; trocarMes(e.target.value); if ([...$('#fs').options].some(o => o.value === fs)) { $('#fs').value = fs; render(); } };
+trocarMes(ini);
+</script>
+</body>
+</html>

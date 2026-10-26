@@ -1,0 +1,6 @@
+.env
+data.json
+dashboard.html
+.cache_*
+__pycache__
+*.zip

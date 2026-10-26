@@ -1,0 +1,16 @@
+# Quadlet (Podman 4.4+) - copie para ~/.config/containers/systemd/ (rootless)
+[Unit]
+Description=Azure Dashboard
+After=network-online.target
+
+[Container]
+Image=localhost/azure-dashboard:latest
+EnvironmentFile=%h/azure-dashboard/.env
+Volume=azure-dashboard-data:/data
+PublishPort=8080:8080
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

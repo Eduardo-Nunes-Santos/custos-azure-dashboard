@@ -1,0 +1,51 @@
+AZURE DASHBOARD
+===============
+Arquivos:
+  azure_dashboard.py   script que coleta os dados e gera o dashboard.html
+  template.html        modelo do painel (NÃO edite o marcador __DATA__)
+  vendor/              Chart.js embutido (funciona sem internet)
+  .env.example         copie para .env e preencha as credenciais
+
+Passo a passo:
+  1) pip install -r requirements.txt
+  2) copie .env.example para .env e preencha TENANT_ID, CLIENT_ID, CLIENT_SECRET, SUBSCRIPTION_ID
+  3) python azure_dashboard.py            (mês atual)
+     python azure_dashboard.py --mes 2026-09
+  4) abra o dashboard.html (arquivo único, pode ser enviado/compartilhado)
+
+Permissões do service principal na subscription: Reader + Cost Management Reader.
+Para conferir os dados coletados, veja o data.json gerado junto.
+Custos no Azure podem levar de 8 a 24h para aparecer.
+O painel mostra previsão do mês (acumulado + média dos últimos 7 dias × dias restantes) e o custo de cada recurso da VM (clique na linha da VM ou use a aba "Custo por recurso").
+Se aparecer erro 429 (limite da API de custos), o script aguarda sozinho e tenta de novo; os custos ficam em cache por 1h (arquivos .cache_*.json - apague para forçar dados novos).
+
+PODMAN
+======
+  podman build -t azure-dashboard .
+  podman run -d --name azure-dashboard --restart=always -p 8080:8080 \
+      --env-file .env -v azure-dashboard-data:/data azure-dashboard
+  acesse: http://IP-DO-SERVIDOR:8080
+  logs:   podman logs -f azure-dashboard
+  forçar atualização agora: podman exec azure-dashboard sh -c 'rm -f /data/.cache_*' && podman restart azure-dashboard
+  Atenção: no .env usado com --env-file NÃO use aspas nos valores.
+  Variáveis opcionais: REFRESH_MINUTES (padrão 60), PORT (padrão 8080), TZ.
+  Iniciar no boot: veja azure-dashboard.container (Quadlet) + loginctl enable-linger <usuario>
+
+MESES ANTERIORES
+================
+O painel tem um seletor "Mês:" no topo. Por padrão inclui os 3 meses anteriores ao mês principal.
+  python azure_dashboard.py --historico 6      (6 meses anteriores)
+  No container: variável MESES_HISTORICO=6
+Meses fechados ficam em cache por 6h (o mês atual, 1h), então só a primeira execução é mais lenta.
+Se a primeira execução der 429, o script espera e tenta de novo; rode novamente se algum mês for ignorado.
+
+UM ÚNICO CONTAINER (recomendado)
+================================
+Rode apenas UM container: todos usam o mesmo service principal e dividem o limite (429) da API de custos.
+  podman ps -a                                   # veja os containers antigos
+  podman rm -f <nome1> <nome2> <nome3>           # remova os antigos
+  podman volume ls ; podman volume rm <volumes antigos>
+  podman build -t azure-dashboard .
+  podman run -d --name azure-dashboard --restart=always -p 8080:8080 \
+      --env-file .env -v azure-dashboard-data:/data azure-dashboard
+Na primeira vez a página mostra "Gerando o dashboard..." e publica primeiro só o mês atual; o histórico entra em seguida.
